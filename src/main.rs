@@ -4,7 +4,7 @@ use std::fs;
 use std::str::FromStr;
 
 fn main() {
-    let instructions = fs::read("./IBM_Logo.ch8").unwrap();
+    let instructions = fs::read("./test_opcode.ch8").unwrap();
     program(instructions);
     println!("Hello, world!");
 }
@@ -96,7 +96,7 @@ impl FromStr for Instruction {
         }
         if chars[0] == '6' {
             return Ok(Instruction::LDVx(
-                chars_to_hex(&chars[1..=2])? as u8,
+                chars_to_hex(&chars[1..=1])? as u8,
                 chars_to_hex(&chars[2..])? as u8,
             ));
         }
@@ -313,7 +313,10 @@ fn read_instruction(
             *program_counter = stack[*stack_counter as usize];
             *stack_counter -= 1;
         }
-        Instruction::JPaddr(location) => *program_counter = location,
+        Instruction::JPaddr(location) => {
+            *program_counter = location;
+            *program_counter -= 2;
+        }
         Instruction::CallAddr(location) => {
             *stack_counter += 1;
             stack[*stack_counter as usize] = *program_counter;
@@ -335,7 +338,9 @@ fn read_instruction(
             }
         }
         Instruction::LDVx(register, kk) => registers[register as usize] = kk,
-        Instruction::ADDVx(register, kk) => registers[register as usize] += kk,
+        Instruction::ADDVx(register, kk) => {
+            registers[register as usize] = registers[register as usize].wrapping_add(kk);
+        }
         Instruction::LDVxVy(register, register2) => {
             registers[register as usize] = registers[register2 as usize]
         }
@@ -355,7 +360,7 @@ fn read_instruction(
             } else {
                 registers[0xF] = 0
             }
-            registers[register as usize] += registers[register2 as usize]
+            registers[register as usize] = (carry % 255) as u8;
         }
         Instruction::SUBVxVy(register, register2) => {
             if registers[register as usize] >= registers[register2 as usize] {
@@ -363,7 +368,9 @@ fn read_instruction(
             } else {
                 registers[0xF] = 0;
             }
-            registers[register as usize] -= registers[register2 as usize];
+            registers[register as usize] = registers[register as usize]
+                .overflowing_sub(registers[register2 as usize])
+                .0;
         }
         Instruction::SHRVx(register) => {
             let least_significant_beat = registers[register as usize] & 1;
@@ -467,7 +474,15 @@ fn read_instruction(
             todo!()
         }
         Instruction::LDBVx(x) => {
-            todo!()
+            let mut x = registers[x as usize];
+            let first = x % 10;
+            x /= 10;
+            let second = x % 10;
+            x /= 10;
+            let third = x % 10;
+            memory[*i_register as usize] = first;
+            memory[*i_register as usize + 1] = second;
+            memory[*i_register as usize + 2] = third;
         }
         Instruction::LDIVx(x) => {
             for (i, register) in registers.iter().take(x as usize + 1).enumerate() {
