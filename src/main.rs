@@ -62,6 +62,7 @@ impl Chip8 {
         self.stack_counter += 1;
         self.stack[self.stack_counter as usize] = self.program_counter;
         self.program_counter = location;
+        self.program_counter -= 2;
     }
     fn SEVx(&mut self, register: u8, kk: u8) {
         if self.registers[register as usize] == kk {
@@ -118,32 +119,37 @@ impl Chip8 {
             .overflowing_sub(self.registers[register2 as usize])
             .0;
     }
-    fn SHRVx(&mut self, register: u8) {
+    fn SHRVx(&mut self, register: u8, register_2: u8) {
+        // todo!() MAKE THIS CONFIGURABL FOR THE USER
+        self.registers[register as usize] = self.registers[register_2 as usize];
         let least_significant_beat = self.registers[register as usize] & 1;
+        self.registers[register as usize] /= 2;
         if least_significant_beat == 1 {
             self.registers[0xF] = 1;
         } else {
             self.registers[0xF] = 0;
         }
-        self.registers[register as usize] /= 2;
     }
     fn SUBN(&mut self, register: u8, register2: u8) {
-        if self.registers[register2 as usize] >= self.registers[register as usize] {
+        if self.registers[register2 as usize] > self.registers[register as usize] {
             self.registers[0xF] = 1;
         } else {
             self.registers[0xF] = 0;
         }
-        self.registers[register as usize] =
-            self.registers[register2 as usize] - self.registers[register as usize];
+        self.registers[register as usize] = self.registers[register2 as usize]
+            .overflowing_sub(self.registers[register as usize])
+            .0;
     }
-    fn SHL(&mut self, register: u8) {
+    fn SHL(&mut self, register: u8, register_2: u8) {
+        // todo!() MAKE THIS CONFIGURABL FOR THE USER
+        self.registers[register as usize] = self.registers[register_2 as usize];
         let most_significant_bit = self.registers[register as usize] >> 7;
+        self.registers[register as usize] *= 2;
         if most_significant_bit == 1 {
             self.registers[0xF] = 1;
         } else {
             self.registers[0xF] = 0;
         }
-        self.registers[register as usize] *= 2;
     }
     fn SNE(&mut self, register: u8, register2: u8) {
         if self.registers[register as usize] != self.registers[register2 as usize] {
@@ -319,9 +325,9 @@ enum Instruction {
     XORVxVy(u8, u8),
     ADDVxVy(u8, u8),
     SUBVxVy(u8, u8),
-    SHRVx(u8),
+    SHRVx(u8, u8),
     SUBN(u8, u8),
-    SHL(u8),
+    SHL(u8, u8),
     SNE(u8, u8),
     LDI(u16),
     JPV0ADDR(u16),
@@ -436,7 +442,10 @@ impl FromStr for Instruction {
             ));
         }
         if chars[0] == '8' && chars[3] == '6' {
-            return Ok(Instruction::SHRVx(chars_to_hex(&chars[1..=1])? as u8));
+            return Ok(Instruction::SHRVx(
+                chars_to_hex(&chars[1..=1])? as u8,
+                chars_to_hex(&chars[1..=1])? as u8,
+            ));
         }
         if chars[0] == '8' && chars[3] == '7' {
             return Ok(Instruction::SUBN(
@@ -445,7 +454,10 @@ impl FromStr for Instruction {
             ));
         }
         if chars[0] == '8' && chars[3] == '8' {
-            return Ok(Instruction::SHL(chars_to_hex(&chars[1..1])? as u8));
+            return Ok(Instruction::SHL(
+                chars_to_hex(&chars[1..=1])? as u8,
+                chars_to_hex(&chars[2..=2])? as u8,
+            ));
         }
         if chars[0] == '9' && chars[3] == '0' {
             return Ok(Instruction::SNE(
@@ -602,9 +614,9 @@ fn read_instruction(
         Instruction::XORVxVy(register, register2) => chip8.XORVxVy(register, register2),
         Instruction::ADDVxVy(register, register2) => chip8.ADDVxVy(register, register2),
         Instruction::SUBVxVy(register, register2) => chip8.SUBVxVy(register, register2),
-        Instruction::SHRVx(register) => chip8.SHRVx(register),
+        Instruction::SHRVx(register, register_2) => chip8.SHRVx(register, register_2),
         Instruction::SUBN(register, register2) => chip8.SUBN(register, register2),
-        Instruction::SHL(register) => chip8.SHL(register),
+        Instruction::SHL(register, register_2) => chip8.SHL(register, register_2),
         Instruction::SNE(register, register2) => chip8.SNE(register, register2),
         Instruction::LDI(nnn) => chip8.LDI(nnn),
         Instruction::JPV0ADDR(nnn) => chip8.JPV0ADDR(nnn),
