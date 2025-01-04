@@ -7,6 +7,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use rand::prelude::*;
+use std::env;
 use std::error;
 use std::fs;
 use std::io::Write;
@@ -16,13 +17,270 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+struct Chip8 {
+    program_counter: u16,
+    stack_counter: u16,
+    registers: [u8; 16],
+    stack: [u16; 16],
+    i_register: u16,
+    delay_timer: Arc<Mutex<u8>>,
+    sound_timer: Arc<Mutex<u8>>,
+    memory: [u8; 4096],
+    screen: [[u8; 64]; 32],
+    current: char,
+    stdout: Stdout,
+}
+
+impl Chip8 {
+    fn new() -> Chip8 {
+        Self {
+            current: ' ',
+            registers: [0; 16],
+            program_counter: 0x200,
+            stack_counter: 0,
+            i_register: 0,
+            stack: [0; 16],
+            screen: [[0; 64]; 32],
+            delay_timer: Arc::new(Mutex::new(0)),
+            sound_timer: Arc::new(Mutex::new(0)),
+            memory: [0; 4096],
+            stdout: stdout(),
+        }
+    }
+    fn CLS(&mut self) {
+        self.screen = [[0; 64]; 32];
+    }
+    fn RET(&mut self) {
+        self.program_counter = self.stack[self.stack_counter as usize];
+        self.stack_counter -= 1;
+    }
+    fn JPaddr(&mut self, location: u16) {
+        self.program_counter = location;
+        self.program_counter -= 2;
+    }
+    fn CallAddr(&mut self, location: u16) {
+        self.stack_counter += 1;
+        self.stack[self.stack_counter as usize] = self.program_counter;
+        self.program_counter = location;
+    }
+    fn SEVx(&mut self, register: u8, kk: u8) {
+        if self.registers[register as usize] == kk {
+            self.program_counter += 2;
+        }
+    }
+    fn SNEVx(&mut self, register: u8, kk: u8) {
+        if self.registers[register as usize] != kk {
+            self.program_counter += 2;
+        }
+    }
+    fn SEVxVy(&mut self, register: u8, register2: u8) {
+        if self.registers[register as usize] == self.registers[register2 as usize] {
+            self.program_counter += 2;
+        }
+    }
+    fn LDVx(&mut self, register: u8, kk: u8) {
+        self.registers[register as usize] = kk
+    }
+    fn ADDVx(&mut self, register: u8, kk: u8) {
+        self.registers[register as usize] = self.registers[register as usize].wrapping_add(kk);
+    }
+    fn LDVxVy(&mut self, register: u8, register2: u8) {
+        self.registers[register as usize] = self.registers[register2 as usize]
+    }
+    fn ORVxVy(&mut self, register: u8, register2: u8) {
+        self.registers[register as usize] |= self.registers[register2 as usize]
+    }
+    fn ANDVxVy(&mut self, register: u8, register2: u8) {
+        self.registers[register as usize] &= self.registers[register2 as usize]
+    }
+    fn XORVxVy(&mut self, register: u8, register2: u8) {
+        self.registers[register as usize] ^= self.registers[register2 as usize]
+    }
+    fn ADDVxVy(&mut self, register: u8, register2: u8) {
+        let carry =
+            self.registers[register as usize] as u32 + self.registers[register2 as usize] as u32;
+        if carry > 255 {
+            self.registers[0xF] = 1;
+        } else {
+            self.registers[0xF] = 0
+        }
+        self.registers[register as usize] = self.registers[register as usize]
+            .overflowing_add(self.registers[register2 as usize])
+            .0;
+    }
+    fn SUBVxVy(&mut self, register: u8, register2: u8) {
+        if self.registers[register as usize] >= self.registers[register2 as usize] {
+            self.registers[0xF] = 1;
+        } else {
+            self.registers[0xF] = 0;
+        }
+        self.registers[register as usize] = self.registers[register as usize]
+            .overflowing_sub(self.registers[register2 as usize])
+            .0;
+    }
+    fn SHRVx(&mut self, register: u8) {
+        let least_significant_beat = self.registers[register as usize] & 1;
+        if least_significant_beat == 1 {
+            self.registers[0xF] = 1;
+        } else {
+            self.registers[0xF] = 0;
+        }
+        self.registers[register as usize] /= 2;
+    }
+    fn SUBN(&mut self, register: u8, register2: u8) {
+        if self.registers[register2 as usize] >= self.registers[register as usize] {
+            self.registers[0xF] = 1;
+        } else {
+            self.registers[0xF] = 0;
+        }
+        self.registers[register as usize] =
+            self.registers[register2 as usize] - self.registers[register as usize];
+    }
+    fn SHL(&mut self, register: u8) {
+        let most_significant_bit = self.registers[register as usize] >> 7;
+        if most_significant_bit == 1 {
+            self.registers[0xF] = 1;
+        } else {
+            self.registers[0xF] = 0;
+        }
+        self.registers[register as usize] *= 2;
+    }
+    fn SNE(&mut self, register: u8, register2: u8) {
+        if self.registers[register as usize] != self.registers[register2 as usize] {
+            self.program_counter += 2;
+        }
+    }
+    fn LDI(&mut self, nnn: u16) {
+        self.i_register = nnn;
+    }
+    fn JPV0ADDR(&mut self, nnn: u16) {
+        self.program_counter = nnn + self.registers[0] as u16;
+    }
+    fn RNDVx(&mut self, x: u8, kk: u8) {
+        let mut rng = rand::thread_rng();
+        let random_number: u8 = rng.gen_range(0..=255);
+        self.registers[x as usize] = random_number & kk;
+    }
+    fn DRW(&mut self, x: u8, y: u8, n: u8) {
+        self.registers[0xF] = 0;
+        let y = self.registers[y as usize] as usize;
+        let x = self.registers[x as usize] as usize;
+        let bytes = &self.memory[self.i_register as usize..(self.i_register + n as u16) as usize];
+        for (i, byte) in bytes.iter().enumerate() {
+            for z in 0..8 {
+                let bit = (byte >> (7 - z)) & 1;
+                let new_y = (y + i) % self.screen.len();
+                let new_x = (x + z) % self.screen[0].len();
+                let was_on = self.screen[new_y][new_x] == 1;
+                self.screen[new_y][new_x] ^= bit;
+                let is_off = self.screen[new_y][new_x] == 0;
+                if was_on && is_off {
+                    self.registers[0xF] = 1;
+                }
+            }
+        }
+        for line in self.screen {
+            queue!(
+                self.stdout,
+                Print(format!(
+                    "{}\n\r",
+                    line.iter()
+                        .map(|l| {
+                            if *l == 0 {
+                                ' '
+                            } else {
+                                '#'
+                            }
+                        })
+                        .collect::<String>()
+                ))
+            )
+            .unwrap();
+        }
+    }
+    fn SKP(&mut self, x: u8) {
+        if self.current
+            == format!("{:X}", self.registers[x as usize])
+                .chars()
+                .next()
+                .unwrap()
+        {
+            self.current = ' ';
+            self.program_counter += 2;
+        }
+    }
+    fn SKNP(&mut self, x: u8) {
+        if self.current
+            != format!("{:X}", self.registers[x as usize])
+                .chars()
+                .next()
+                .unwrap()
+        {
+            self.program_counter += 2;
+        }
+    }
+    fn LDVxDT(&mut self, x: u8) {
+        self.registers[x as usize] = *self.delay_timer.lock().unwrap();
+    }
+    fn LDDTVx(&mut self, x: u8) {
+        *self.delay_timer.lock().unwrap() = self.registers[x as usize];
+    }
+    fn LDSTVx(&mut self, x: u8) {
+        *self.sound_timer.lock().unwrap() = self.registers[x as usize];
+    }
+    fn ADDIVx(&mut self, x: u8) {
+        self.i_register += self.registers[x as usize] as u16;
+    }
+    fn LDFVx(&mut self, x: u8) {
+        let value = self.registers[x as usize];
+        self.i_register = value as u16 * 5;
+    }
+    fn LDBVx(&mut self, x: u8) {
+        let mut x = self.registers[x as usize];
+        let first = x % 10;
+        x /= 10;
+        let second = x % 10;
+        x /= 10;
+        let third = x % 10;
+        self.memory[self.i_register as usize] = third;
+        self.memory[self.i_register as usize + 1] = second;
+        self.memory[self.i_register as usize + 2] = first;
+    }
+    fn LDIVx(&mut self, x: u8) {
+        for (i, register) in self.registers.iter().take(x as usize + 1).enumerate() {
+            self.memory[i + (self.i_register as usize)] = *register;
+        }
+    }
+    fn LDVxI(&mut self, x: u8) {
+        for (i, register) in self.registers.iter_mut().take(x as usize + 1).enumerate() {
+            *register = self.memory[i + (self.i_register as usize)];
+        }
+    }
+    fn LDVxK(&mut self, x: u8) {
+        loop {
+            if let Some(val) = handle_input() {
+                self.registers[x as usize] = val;
+                break;
+            }
+        }
+    }
+}
+
 fn main() {
-    let instructions = fs::read("./tetris.rom").unwrap();
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: {} <file_path>", args[0]);
+        std::process::exit(1);
+    }
+
+    // Get the file path from the arguments
+    let file_path = &args[1];
+    let instructions = fs::read(file_path).unwrap();
     let mut stdout: Stdout = stdout();
     terminal::enable_raw_mode().unwrap();
     stdout.execute(EnterAlternateScreen).unwrap();
     stdout.execute(SetSize(32, 64)).unwrap();
-    program(instructions, &mut stdout);
+    program(instructions);
 }
 
 pub const FONT: [u8; 80] = [
@@ -271,25 +529,17 @@ fn numbers_to_hex(num_1: u8, num_2: u8) -> String {
     format!("{}{}", num_1, num_2)
 }
 
-fn program(instructions: Vec<u8>, stdout: &mut Stdout) {
-    let mut memory = [0; 4096];
+fn program(instructions: Vec<u8>) {
+    let mut chip8 = Chip8::new();
     for (i, instruction) in instructions.iter().enumerate() {
-        memory[0x200 + i] = *instruction;
+        chip8.memory[0x200 + i] = *instruction;
     }
-    let mut registers = [0; 17];
-    let mut program_counter = 0x200;
-    let mut stack_counter = 0;
-    let mut i_register = 0;
-    let mut stack: [u16; 16] = [0; 16];
-    let mut screen = [[0; 64]; 32];
-    let delay_timer = Arc::new(Mutex::new(0));
-    let sound_timer = Arc::new(Mutex::new(0));
     for (i, font) in FONT.into_iter().enumerate() {
-        memory[i] = font;
+        chip8.memory[i] = font;
     }
     {
-        let delay_timer = Arc::clone(&delay_timer);
-        let sound_timer = Arc::clone(&sound_timer);
+        let delay_timer = Arc::clone(&chip8.delay_timer);
+        let sound_timer = Arc::clone(&chip8.sound_timer);
         thread::spawn(move || loop {
             let mut delay_timer: u8 = *delay_timer.lock().unwrap();
             delay_timer = delay_timer.saturating_sub(1);
@@ -298,280 +548,79 @@ fn program(instructions: Vec<u8>, stdout: &mut Stdout) {
             thread::sleep(Duration::from_millis(16));
         });
     }
-    let mut current = ' ';
     loop {
-        stdout.flush().unwrap();
+        chip8.stdout.flush().unwrap();
         if poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(event) = read().unwrap() {
                 if let KeyCode::Char(m) = event.code {
-                    stdout.execute(Print(format!("p{}\n\r", current))).unwrap();
-                    current = m;
+                    chip8
+                        .stdout
+                        .execute(Print(format!("p{}\n\r", chip8.current)))
+                        .unwrap();
+                    chip8.current = m;
                 }
                 if event.code == KeyCode::Char('q') {
-                    stdout
+                    chip8
+                        .stdout
                         .execute(Print("You pressed 'q'. Exiting...\n"))
                         .unwrap();
                     panic!("done");
                 }
             }
         }
-        let delay_timer = Arc::clone(&delay_timer);
-        let sound_timer = Arc::clone(&sound_timer);
         let hex = numbers_to_hex(
-            memory[program_counter as usize],
-            memory[program_counter as usize + 1],
+            chip8.memory[chip8.program_counter as usize],
+            chip8.memory[chip8.program_counter as usize + 1],
         );
         if let Ok(insruction) = Instruction::from_str(&hex) {
-            read_instruction(
-                insruction,
-                &mut program_counter,
-                &mut stack_counter,
-                &mut registers,
-                &mut stack,
-                &mut i_register,
-                delay_timer,
-                sound_timer,
-                &mut memory,
-                &mut screen,
-                stdout,
-                &mut current,
-            )
-            .unwrap();
+            read_instruction(insruction, &mut chip8).unwrap();
         };
-        program_counter += 2;
+        chip8.program_counter += 2;
     }
 }
 
 fn read_instruction(
     instruction: Instruction,
-    program_counter: &mut u16,
-    stack_counter: &mut u16,
-    registers: &mut [u8; 17],
-    stack: &mut [u16; 16],
-    i_register: &mut u16,
-    delay_timer: Arc<Mutex<u8>>,
-    sound_timer: Arc<Mutex<u8>>,
-    memory: &mut [u8; 4096],
-    screen: &mut [[u8; 64]; 32],
-    stdout: &mut Stdout,
-    current: &mut char,
+    chip8: &mut Chip8,
 ) -> Result<(), Box<dyn error::Error>> {
     match instruction {
         Instruction::SysAddr(_location) => {
             //
         }
-        Instruction::CLS => {
-            *screen = [[0; 64]; 32];
-        }
-        Instruction::RET => {
-            *program_counter = stack[*stack_counter as usize];
-            *stack_counter -= 1;
-        }
-        Instruction::JPaddr(location) => {
-            *program_counter = location;
-            *program_counter -= 2;
-        }
-        Instruction::CallAddr(location) => {
-            *stack_counter += 1;
-            stack[*stack_counter as usize] = *program_counter;
-            *program_counter = location;
-        }
-        Instruction::SEVx(register, kk) => {
-            if registers[register as usize] == kk {
-                *program_counter += 2;
-            }
-        }
-        Instruction::SNEVx(register, kk) => {
-            if registers[register as usize] != kk {
-                *program_counter += 2;
-            }
-        }
-        Instruction::SEVxVy(register, register2) => {
-            if registers[register as usize] == registers[register2 as usize] {
-                *program_counter += 2;
-            }
-        }
-        Instruction::LDVx(register, kk) => registers[register as usize] = kk,
-        Instruction::ADDVx(register, kk) => {
-            registers[register as usize] = registers[register as usize].wrapping_add(kk);
-        }
-        Instruction::LDVxVy(register, register2) => {
-            registers[register as usize] = registers[register2 as usize]
-        }
-        Instruction::ORVxVy(register, register2) => {
-            registers[register as usize] |= registers[register2 as usize]
-        }
-        Instruction::ANDVxVy(register, register2) => {
-            registers[register as usize] &= registers[register2 as usize]
-        }
-        Instruction::XORVxVy(register, register2) => {
-            registers[register as usize] ^= registers[register2 as usize]
-        }
-        Instruction::ADDVxVy(register, register2) => {
-            let carry = registers[register as usize] as u32 + registers[register2 as usize] as u32;
-            if carry > 255 {
-                registers[0xF] = 1;
-            } else {
-                registers[0xF] = 0
-            }
-            registers[register as usize] = registers[register as usize]
-                .overflowing_add(registers[register2 as usize])
-                .0;
-        }
-        Instruction::SUBVxVy(register, register2) => {
-            if registers[register as usize] >= registers[register2 as usize] {
-                registers[0xF] = 1;
-            } else {
-                registers[0xF] = 0;
-            }
-            registers[register as usize] = registers[register as usize]
-                .overflowing_sub(registers[register2 as usize])
-                .0;
-        }
-        Instruction::SHRVx(register) => {
-            let least_significant_beat = registers[register as usize] & 1;
-            if least_significant_beat == 1 {
-                registers[0xF] = 1;
-            } else {
-                registers[0xF] = 0;
-            }
-            registers[register as usize] /= 2;
-        }
-        Instruction::SUBN(register, register2) => {
-            if registers[register2 as usize] >= registers[register as usize] {
-                registers[0xF] = 1;
-            } else {
-                registers[0xF] = 0;
-            }
-            registers[register as usize] =
-                registers[register2 as usize] - registers[register as usize];
-        }
-        Instruction::SHL(register) => {
-            let most_significant_bit = registers[register as usize] >> 7;
-            if most_significant_bit == 1 {
-                registers[0xF] = 1;
-            } else {
-                registers[0xF] = 0;
-            }
-            registers[register as usize] *= 2;
-        }
-        Instruction::SNE(register, register2) => {
-            if registers[register as usize] != registers[register2 as usize] {
-                *program_counter += 2;
-            }
-        }
-        Instruction::LDI(nnn) => {
-            *i_register = nnn;
-        }
-        Instruction::JPV0ADDR(nnn) => {
-            *program_counter = nnn + registers[0] as u16;
-        }
-        Instruction::RNDVx(x, kk) => {
-            let mut rng = rand::thread_rng();
-            let random_number: u8 = rng.gen_range(0..=255);
-            registers[x as usize] = random_number & kk;
-        }
-        Instruction::DRW(x, y, n) => {
-            registers[0xF] = 0;
-            let y = registers[y as usize] as usize;
-            let x = registers[x as usize] as usize;
-            let bytes = &memory[*i_register as usize..(*i_register + n as u16) as usize];
-            for (i, byte) in bytes.iter().enumerate() {
-                for z in 0..8 {
-                    let bit = (byte >> (7 - z)) & 1;
-                    let new_y = (y + i) % screen.len();
-                    let new_x = (x + z) % screen[0].len();
-                    let was_on = screen[new_y][new_x] == 1;
-                    screen[new_y][new_x] ^= bit;
-                    let is_off = screen[new_y][new_x] == 0;
-                    if was_on && is_off {
-                        registers[0xF] = 1;
-                    }
-                }
-            }
-            for line in screen {
-                queue!(
-                    stdout,
-                    Print(format!(
-                        "{}\n\r",
-                        line.iter()
-                            .map(|l| {
-                                if *l == 0 {
-                                    ' '
-                                } else {
-                                    '#'
-                                }
-                            })
-                            .collect::<String>()
-                    ))
-                )
-                .unwrap();
-            }
-        }
-        Instruction::SKP(x) => {
-            if *current
-                == format!("{:X}", registers[x as usize])
-                    .chars()
-                    .next()
-                    .unwrap()
-            {
-                *current = ' ';
-                *program_counter += 2;
-            }
-        }
-        Instruction::SKNP(x) => {
-            if *current
-                != format!("{:X}", registers[x as usize])
-                    .chars()
-                    .next()
-                    .unwrap()
-            {
-                *program_counter += 2;
-            }
-        }
-        Instruction::LDVxDT(x) => {
-            registers[x as usize] = *delay_timer.lock().unwrap();
-        }
-        Instruction::LDDTVx(x) => {
-            *delay_timer.lock().unwrap() = registers[x as usize];
-        }
-        Instruction::LDSTVx(x) => {
-            *sound_timer.lock().unwrap() = registers[x as usize];
-        }
-        Instruction::ADDIVx(x) => {
-            *i_register += registers[x as usize] as u16;
-        }
-        Instruction::LDFVx(x) => {
-            let value = registers[x as usize];
-            *i_register = value as u16 * 5;
-        }
-        Instruction::LDBVx(x) => {
-            let mut x = registers[x as usize];
-            let first = x % 10;
-            x /= 10;
-            let second = x % 10;
-            x /= 10;
-            let third = x % 10;
-            memory[*i_register as usize] = third;
-            memory[*i_register as usize + 1] = second;
-            memory[*i_register as usize + 2] = first;
-        }
-        Instruction::LDIVx(x) => {
-            for (i, register) in registers.iter().take(x as usize + 1).enumerate() {
-                memory[i + (*i_register as usize)] = *register;
-            }
-        }
-        Instruction::LDVxI(x) => {
-            for (i, register) in registers.iter_mut().take(x as usize + 1).enumerate() {
-                *register = memory[i + (*i_register as usize)];
-            }
-        }
-        Instruction::LDVxK(x) => loop {
-            if let Some(val) = handle_input() {
-                registers[x as usize] = val;
-                break;
-            }
-        },
+        Instruction::CLS => chip8.CLS(),
+        Instruction::RET => chip8.RET(),
+        Instruction::JPaddr(location) => chip8.JPaddr(location),
+        Instruction::CallAddr(location) => chip8.CallAddr(location),
+        Instruction::SEVx(register, kk) => chip8.SEVx(register, kk),
+        Instruction::SNEVx(register, kk) => chip8.SNEVx(register, kk),
+        Instruction::SEVxVy(register, register2) => chip8.SEVxVy(register, register2),
+        Instruction::LDVx(register, kk) => chip8.registers[register as usize] = kk,
+        Instruction::ADDVx(register, kk) => chip8.ADDVx(register, kk),
+        Instruction::LDVxVy(register, register2) => chip8.LDVxVy(register, register2),
+        Instruction::ORVxVy(register, register2) => chip8.ORVxVy(register, register2),
+        Instruction::ANDVxVy(register, register2) => chip8.ANDVxVy(register, register2),
+        Instruction::XORVxVy(register, register2) => chip8.XORVxVy(register, register2),
+        Instruction::ADDVxVy(register, register2) => chip8.ADDVxVy(register, register2),
+        Instruction::SUBVxVy(register, register2) => chip8.SUBVxVy(register, register2),
+        Instruction::SHRVx(register) => chip8.SHRVx(register),
+        Instruction::SUBN(register, register2) => chip8.SUBN(register, register2),
+        Instruction::SHL(register) => chip8.SHL(register),
+        Instruction::SNE(register, register2) => chip8.SNE(register, register2),
+        Instruction::LDI(nnn) => chip8.LDI(nnn),
+        Instruction::JPV0ADDR(nnn) => chip8.JPV0ADDR(nnn),
+        Instruction::RNDVx(x, kk) => chip8.RNDVx(x, kk),
+        Instruction::DRW(x, y, n) => chip8.DRW(x, y, n),
+        Instruction::SKP(x) => chip8.SKP(x),
+        Instruction::SKNP(x) => chip8.SKNP(x),
+        Instruction::LDVxDT(x) => chip8.LDVxDT(x),
+        Instruction::LDDTVx(x) => chip8.LDDTVx(x),
+        Instruction::LDSTVx(x) => chip8.LDSTVx(x),
+        Instruction::ADDIVx(x) => chip8.ADDIVx(x),
+        Instruction::LDFVx(x) => chip8.LDFVx(x),
+        Instruction::LDBVx(x) => chip8.LDBVx(x),
+        Instruction::LDIVx(x) => chip8.LDIVx(x),
+        Instruction::LDVxI(x) => chip8.LDVxI(x),
+        Instruction::LDVxK(x) => chip8.LDVxK(x),
     };
     Ok(())
 }
