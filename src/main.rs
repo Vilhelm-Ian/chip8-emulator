@@ -127,12 +127,8 @@ impl Chip8 {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
         self.registers[register as usize] = self.registers[register_2 as usize];
         let least_significant_beat = self.registers[register as usize] & 1;
-        self.registers[register as usize] /= 2;
-        if least_significant_beat == 1 {
-            self.registers[0xF] = 1;
-        } else {
-            self.registers[0xF] = 0;
-        }
+        self.registers[0xF] = least_significant_beat;
+        self.registers[register as usize] >>= 1;
     }
     fn SUBN(&mut self, register: u8, register2: u8) {
         if self.registers[register2 as usize] > self.registers[register as usize] {
@@ -147,13 +143,9 @@ impl Chip8 {
     fn SHL(&mut self, register: u8, register_2: u8) {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
         self.registers[register as usize] = self.registers[register_2 as usize];
-        let most_significant_bit = self.registers[register as usize] >> 7;
-        self.registers[register as usize] *= 2;
-        if most_significant_bit == 1 {
-            self.registers[0xF] = 1;
-        } else {
-            self.registers[0xF] = 0;
-        }
+        let least_significant_beat = self.registers[register as usize] >> 7;
+        self.registers[0xF] = least_significant_beat;
+        self.registers[register as usize] <<= 1;
     }
     fn SNE(&mut self, register: u8, register2: u8) {
         if self.registers[register as usize] != self.registers[register2 as usize] {
@@ -448,7 +440,7 @@ impl FromStr for Instruction {
         if chars[0] == '8' && chars[3] == '6' {
             return Ok(Instruction::SHRVx(
                 chars_to_hex(&chars[1..=1])? as u8,
-                chars_to_hex(&chars[1..=1])? as u8,
+                chars_to_hex(&chars[2..=2])? as u8,
             ));
         }
         if chars[0] == '8' && chars[3] == '7' {
@@ -457,7 +449,7 @@ impl FromStr for Instruction {
                 chars_to_hex(&chars[2..=2])? as u8,
             ));
         }
-        if chars[0] == '8' && chars[3] == '8' {
+        if chars[0] == '8' && chars[3] == 'E' {
             return Ok(Instruction::SHL(
                 chars_to_hex(&chars[1..=1])? as u8,
                 chars_to_hex(&chars[2..=2])? as u8,
