@@ -12,6 +12,7 @@ use std::error;
 use std::fs;
 use std::io::Write;
 use std::io::{stdout, Stdout};
+use std::ops::Index;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -51,18 +52,21 @@ impl Chip8 {
         self.screen = [[0; 64]; 32];
     }
     fn RET(&mut self) {
-        self.program_counter = self.stack[self.stack_counter as usize];
-        self.stack_counter -= 1;
+        if self.stack_counter as usize >= self.stack.len() {
+            return ();
+        }
+        self.program_counter = *self.stack.index(self.stack_counter as usize);
+        self.stack_counter = self.stack_counter.overflowing_sub(1).0;
     }
     fn JPaddr(&mut self, location: u16) {
         self.program_counter = location;
-        self.program_counter -= 2;
+        self.program_counter = self.program_counter.overflowing_sub(2).0;
     }
     fn CallAddr(&mut self, location: u16) {
-        self.stack_counter += 1;
+        self.stack_counter = self.stack_counter.overflowing_add(1).0;
         self.stack[self.stack_counter as usize] = self.program_counter;
         self.program_counter = location;
-        self.program_counter -= 2;
+        self.program_counter = self.program_counter.overflowing_sub(2).0;
     }
     fn SEVx(&mut self, register: u8, kk: u8) {
         if self.registers[register as usize] == kk {
@@ -587,7 +591,7 @@ fn program(instructions: Vec<u8>) {
         if let Ok(insruction) = Instruction::from_str(&hex) {
             read_instruction(insruction, &mut chip8).unwrap();
         };
-        chip8.program_counter += 2;
+        chip8.program_counter = chip8.program_counter.overflowing_add(2).0;
     }
 }
 
