@@ -1,24 +1,19 @@
-use crossterm::terminal::{size, SetSize};
+use crossterm::terminal::SetSize;
 use crossterm::{
-    cursor::{Hide, Show},
-    event::{self, poll, read, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{poll, read, Event, KeyCode},
     queue,
     style::*,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-    terminal::{Clear, ClearType},
+    terminal::{self, EnterAlternateScreen},
     ExecutableCommand,
 };
 use rand::prelude::*;
-use std::borrow::BorrowMut;
 use std::error;
 use std::fs;
-use std::io::StdoutLock;
-use std::io::{self, Write};
+use std::io::Write;
 use std::io::{stdout, Stdout};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::spawn;
 use std::time::Duration;
 
 fn main() {
@@ -296,20 +291,20 @@ fn program(instructions: Vec<u8>, stdout: &mut Stdout) {
         let delay_timer = Arc::clone(&delay_timer);
         let sound_timer = Arc::clone(&sound_timer);
         thread::spawn(move || loop {
-            let delay_timer: u8 = *delay_timer.lock().unwrap();
-            delay_timer.saturating_sub(1);
-            let sound_timer: u8 = *sound_timer.lock().unwrap();
-            sound_timer.saturating_sub(1);
+            let mut delay_timer: u8 = *delay_timer.lock().unwrap();
+            delay_timer = delay_timer.saturating_sub(1);
+            let mut sound_timer: u8 = *sound_timer.lock().unwrap();
+            sound_timer = sound_timer.saturating_sub(1);
             thread::sleep(Duration::from_millis(16));
         });
     }
     let mut current = ' ';
     loop {
-        stdout.flush();
+        stdout.flush().unwrap();
         if poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(event) = read().unwrap() {
                 if let KeyCode::Char(m) = event.code {
-                    stdout.execute(Print(format!("p{}\n\r", current)));
+                    stdout.execute(Print(format!("p{}\n\r", current))).unwrap();
                     current = m;
                 }
                 if event.code == KeyCode::Char('q') {
@@ -340,7 +335,8 @@ fn program(instructions: Vec<u8>, stdout: &mut Stdout) {
                 &mut screen,
                 stdout,
                 &mut current,
-            );
+            )
+            .unwrap();
         };
         program_counter += 2;
     }
