@@ -18,14 +18,27 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+struct Timers {
+    delay_timer: u8,
+    sound_timer: u8,
+}
+
+impl Timers {
+    fn new() -> Self {
+        Self {
+            delay_timer: 0,
+            sound_timer: 0,
+        }
+    }
+}
+
 struct Chip8 {
     program_counter: u16,
     stack_counter: u16,
     registers: [u8; 16],
     stack: [u16; 16],
     i_register: u16,
-    delay_timer: Arc<Mutex<u8>>,
-    sound_timer: Arc<Mutex<u8>>,
+    timers: Arc<Mutex<Timers>>,
     memory: [u8; 4096],
     screen: [[u8; 64]; 32],
     current: char,
@@ -42,8 +55,7 @@ impl Chip8 {
             i_register: 0,
             stack: [0; 16],
             screen: [[0; 64]; 32],
-            delay_timer: Arc::new(Mutex::new(0)),
-            sound_timer: Arc::new(Mutex::new(0)),
+            timers: Arc::new(Mutex::new(Timers::new())),
             memory: [0; 4096],
             stdout: stdout(),
         }
@@ -93,13 +105,16 @@ impl Chip8 {
         self.registers[register as usize] = self.registers[register2 as usize]
     }
     fn ORVxVy(&mut self, register: u8, register2: u8) {
-        self.registers[register as usize] |= self.registers[register2 as usize]
+        self.registers[register as usize] |= self.registers[register2 as usize];
+        self.registers[0xF] = 0;
     }
     fn ANDVxVy(&mut self, register: u8, register2: u8) {
-        self.registers[register as usize] &= self.registers[register2 as usize]
+        self.registers[register as usize] &= self.registers[register2 as usize];
+        self.registers[0xF] = 0;
     }
     fn XORVxVy(&mut self, register: u8, register2: u8) {
-        self.registers[register as usize] ^= self.registers[register2 as usize]
+        self.registers[register as usize] ^= self.registers[register2 as usize];
+        self.registers[0xF] = 0;
     }
     fn ADDVxVy(&mut self, register: u8, register2: u8) {
         let sum =
@@ -115,7 +130,7 @@ impl Chip8 {
     }
     fn SHRVx(&mut self, register: u8, register_2: u8) {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
-        // self.registers[register as usize] = self.registers[register_2 as usize];
+        self.registers[register as usize] = self.registers[register_2 as usize];
         let least_significant_beat = self.registers[register as usize] & 1;
         self.registers[register as usize] >>= 1;
         self.registers[0xF] = least_significant_beat;
@@ -128,7 +143,7 @@ impl Chip8 {
     }
     fn SHL(&mut self, register: u8, register_2: u8) {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
-        // self.registers[register as usize] = self.registers[register_2 as usize];
+        self.registers[register as usize] = self.registers[register_2 as usize];
         let most_significant_bit = self.registers[register as usize] >> 7;
         self.registers[register as usize] <<= 1;
         self.registers[0xF] = most_significant_bit;
@@ -154,8 +169,15 @@ impl Chip8 {
         let y = self.registers[y as usize] as usize;
         let x = self.registers[x as usize] as usize;
         let bytes = &self.memory[self.i_register as usize..(self.i_register + n as u16) as usize];
+        let mut overflow = false;
         for (i, byte) in bytes.iter().enumerate() {
+            if y >= self.screen.len() || x >= self.screen[0].len() {
+                overflow = true;
+            }
             for z in 0..8 {
+                if !overflow && (y + i >= self.screen.len() || x + z >= self.screen[0].len()) {
+                    break;
+                }
                 let bit = (byte >> (7 - z)) & 1;
                 let new_y = (y + i) % self.screen.len();
                 let new_x = (x + z) % self.screen[0].len();
@@ -167,23 +189,6 @@ impl Chip8 {
                 }
             }
         }
-        let mut screen = String::new();
-        for line in self.screen {
-            let row = format!(
-                "{}\n\r",
-                line.iter()
-                    .map(|l| {
-                        if *l == 0 {
-                            ' '
-                        } else {
-                            '#'
-                        }
-                    })
-                    .collect::<String>()
-            );
-            screen = format!("{screen}{row}");
-        }
-        queue!(self.stdout, Clear(terminal::ClearType::All), Print(screen)).unwrap();
     }
     fn SKP(&mut self, x: u8) {
         if self.current
@@ -209,13 +214,16 @@ impl Chip8 {
         }
     }
     fn LDVxDT(&mut self, x: u8) {
-        self.registers[x as usize] = *self.delay_timer.lock().unwrap();
+        let timers = self.timers.lock().unwrap();
+        self.registers[x as usize] = timers.delay_timer;
     }
     fn LDDTVx(&mut self, x: u8) {
-        *self.delay_timer.lock().unwrap() = self.registers[x as usize];
+        let mut timers = self.timers.lock().unwrap();
+        timers.delay_timer = self.registers[x as usize];
     }
     fn LDSTVx(&mut self, x: u8) {
-        *self.sound_timer.lock().unwrap() = self.registers[x as usize];
+        let mut timers = self.timers.lock().unwrap();
+        timers.sound_timer = self.registers[x as usize];
     }
     fn ADDIVx(&mut self, x: u8) {
         self.i_register += self.registers[x as usize] as u16;
@@ -236,13 +244,17 @@ impl Chip8 {
         self.memory[self.i_register as usize + 2] = first;
     }
     fn LDIVx(&mut self, x: u8) {
+        // Make this configurable
         for (i, register) in self.registers.iter().take(x as usize + 1).enumerate() {
-            self.memory[i + (self.i_register as usize)] = *register;
+            self.memory[(self.i_register as usize)] = *register;
+            self.i_register += 1;
         }
     }
     fn LDVxI(&mut self, x: u8) {
+        // Make this configurable
         for (i, register) in self.registers.iter_mut().take(x as usize + 1).enumerate() {
-            *register = self.memory[i + (self.i_register as usize)];
+            *register = self.memory[(self.i_register as usize)];
+            self.i_register += 1;
         }
     }
     fn LDVxK(&mut self, x: u8) {
@@ -536,18 +548,20 @@ fn program(instructions: Vec<u8>) {
         chip8.memory[i] = font;
     }
     {
-        let delay_timer = Arc::clone(&chip8.delay_timer);
-        let sound_timer = Arc::clone(&chip8.sound_timer);
-        thread::spawn(move || loop {
-            let mut delay_timer: u8 = *delay_timer.lock().unwrap();
-            delay_timer = delay_timer.saturating_sub(1);
-            let mut sound_timer: u8 = *sound_timer.lock().unwrap();
-            sound_timer = sound_timer.saturating_sub(1);
+        let timers = Arc::clone(&chip8.timers);
+        let timers_thread = thread::spawn(move || loop {
+            let timers = Arc::clone(&timers);
+            let mut timers = timers.lock().unwrap();
+            timers.delay_timer = timers.delay_timer.saturating_sub(1);
+            timers.sound_timer = timers.sound_timer.saturating_sub(1);
+            std::mem::drop(timers);
             thread::sleep(Duration::from_millis(16));
         });
     }
     loop {
-        chip8.stdout.flush().unwrap();
+        if (chip8.timers.clone()).lock().unwrap().sound_timer > 0 {
+            println!("\x07");
+        }
         if poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(event) = read().unwrap() {
                 if let KeyCode::Char(m) = event.code {
@@ -574,6 +588,25 @@ fn program(instructions: Vec<u8>) {
             read_instruction(insruction, &mut chip8).unwrap();
         };
         chip8.program_counter = chip8.program_counter.overflowing_add(2).0;
+        chip8.stdout.flush().unwrap();
+        let mut screen = String::new();
+        for line in chip8.screen {
+            let row = format!(
+                "{}\n\r",
+                line.iter()
+                    .map(|l| {
+                        if *l == 0 {
+                            ' '
+                        } else {
+                            '#'
+                        }
+                    })
+                    .collect::<String>()
+            );
+            screen = format!("{screen}{row}");
+        }
+        queue!(chip8.stdout, Clear(terminal::ClearType::All), Print(screen)).unwrap();
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
