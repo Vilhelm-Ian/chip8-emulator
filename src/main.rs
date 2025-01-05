@@ -3,7 +3,7 @@ use crossterm::{
     event::{poll, read, Event, KeyCode},
     queue,
     style::*,
-    terminal::{self, EnterAlternateScreen},
+    terminal::{self, Clear, EnterAlternateScreen},
     ExecutableCommand,
 };
 use rand::prelude::*;
@@ -102,50 +102,36 @@ impl Chip8 {
         self.registers[register as usize] ^= self.registers[register2 as usize]
     }
     fn ADDVxVy(&mut self, register: u8, register2: u8) {
-        let carry =
-            self.registers[register as usize] as u32 + self.registers[register2 as usize] as u32;
-        if carry > 255 {
-            self.registers[0xF] = 1;
-        } else {
-            self.registers[0xF] = 0
-        }
-        self.registers[register as usize] = self.registers[register as usize]
-            .overflowing_add(self.registers[register2 as usize])
-            .0;
+        let sum =
+            self.registers[register as usize].overflowing_add(self.registers[register2 as usize]);
+        self.registers[register as usize] = sum.0;
+        self.registers[0xF] = if sum.1 { 1 } else { 0 };
     }
     fn SUBVxVy(&mut self, register: u8, register2: u8) {
-        if self.registers[register as usize] >= self.registers[register2 as usize] {
-            self.registers[0xF] = 1;
-        } else {
-            self.registers[0xF] = 0;
-        }
-        self.registers[register as usize] = self.registers[register as usize]
-            .overflowing_sub(self.registers[register2 as usize])
-            .0;
+        let sub =
+            self.registers[register as usize].overflowing_sub(self.registers[register2 as usize]);
+        self.registers[register as usize] = sub.0;
+        self.registers[0xF] = if sub.1 { 0 } else { 1 };
     }
     fn SHRVx(&mut self, register: u8, register_2: u8) {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
-        self.registers[register as usize] = self.registers[register_2 as usize];
+        // self.registers[register as usize] = self.registers[register_2 as usize];
         let least_significant_beat = self.registers[register as usize] & 1;
-        self.registers[0xF] = least_significant_beat;
         self.registers[register as usize] >>= 1;
+        self.registers[0xF] = least_significant_beat;
     }
     fn SUBN(&mut self, register: u8, register2: u8) {
-        if self.registers[register2 as usize] > self.registers[register as usize] {
-            self.registers[0xF] = 1;
-        } else {
-            self.registers[0xF] = 0;
-        }
-        self.registers[register as usize] = self.registers[register2 as usize]
-            .overflowing_sub(self.registers[register as usize])
-            .0;
+        let sub =
+            self.registers[register2 as usize].overflowing_sub(self.registers[register as usize]);
+        self.registers[register as usize] = sub.0;
+        self.registers[0xF] = if sub.1 { 0 } else { 1 };
     }
     fn SHL(&mut self, register: u8, register_2: u8) {
         // todo!() MAKE THIS CONFIGURABL FOR THE USER
-        self.registers[register as usize] = self.registers[register_2 as usize];
-        let least_significant_beat = self.registers[register as usize] >> 7;
-        self.registers[0xF] = least_significant_beat;
+        // self.registers[register as usize] = self.registers[register_2 as usize];
+        let most_significant_bit = self.registers[register as usize] >> 7;
         self.registers[register as usize] <<= 1;
+        self.registers[0xF] = most_significant_bit;
     }
     fn SNE(&mut self, register: u8, register2: u8) {
         if self.registers[register as usize] != self.registers[register2 as usize] {
@@ -181,24 +167,23 @@ impl Chip8 {
                 }
             }
         }
+        let mut screen = String::new();
         for line in self.screen {
-            queue!(
-                self.stdout,
-                Print(format!(
-                    "{}\n\r",
-                    line.iter()
-                        .map(|l| {
-                            if *l == 0 {
-                                ' '
-                            } else {
-                                '#'
-                            }
-                        })
-                        .collect::<String>()
-                ))
-            )
-            .unwrap();
+            let row = format!(
+                "{}\n\r",
+                line.iter()
+                    .map(|l| {
+                        if *l == 0 {
+                            ' '
+                        } else {
+                            '#'
+                        }
+                    })
+                    .collect::<String>()
+            );
+            screen = format!("{screen}{row}");
         }
+        queue!(self.stdout, Clear(terminal::ClearType::All), Print(screen)).unwrap();
     }
     fn SKP(&mut self, x: u8) {
         if self.current
@@ -219,6 +204,8 @@ impl Chip8 {
                 .unwrap()
         {
             self.program_counter += 2;
+        } else {
+            self.current = ' ';
         }
     }
     fn LDVxDT(&mut self, x: u8) {
@@ -277,7 +264,10 @@ fn main() {
 
     // Get the file path from the arguments
     let file_path = &args[1];
-    let instructions = fs::read(file_path).unwrap();
+    let instructions = fs::read(file_path).unwrap_or_else(|_| {
+        eprintln!("couldn't open file");
+        std::process::exit(1);
+    });
     let mut stdout: Stdout = stdout();
     terminal::enable_raw_mode().unwrap();
     stdout.execute(EnterAlternateScreen).unwrap();
@@ -572,7 +562,7 @@ fn program(instructions: Vec<u8>) {
                         .stdout
                         .execute(Print("You pressed 'q'. Exiting...\n"))
                         .unwrap();
-                    panic!("done");
+                    std::process::exit(1);
                 }
             }
         }
