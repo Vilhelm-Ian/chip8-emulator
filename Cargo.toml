@@ -13,3 +13,8 @@ target = "x86_64-pc-windows-gnu"
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 
+[target.arm-linux-androideabi]
+linker = "arm-linux-androideabi-gcc"
+
+[target.arm-linux-androideabi-clang]
+linker = "arm-linux-androideabi-clang"

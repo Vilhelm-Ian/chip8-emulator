@@ -1,5 +1,6 @@
 use crossterm::terminal::SetSize;
 use crossterm::{
+    cursor,
     event::{poll, read, Event, KeyCode},
     queue,
     style::*,
@@ -558,6 +559,7 @@ fn program(instructions: Vec<u8>) {
             thread::sleep(Duration::from_millis(16));
         });
     }
+    let mut old_screen = chip8.screen.clone();
     loop {
         if (chip8.timers.clone()).lock().unwrap().sound_timer > 0 {
             println!("\x07");
@@ -565,10 +567,10 @@ fn program(instructions: Vec<u8>) {
         if poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(event) = read().unwrap() {
                 if let KeyCode::Char(m) = event.code {
-                    chip8
-                        .stdout
-                        .execute(Print(format!("p{}\n\r", chip8.current)))
-                        .unwrap();
+                    // chip8
+                    //     .stdout
+                    //     .execute(Print(format!("p{}\n\r", chip8.current)))
+                    //     .unwrap();
                     chip8.current = m;
                 }
                 if event.code == KeyCode::Char('q') {
@@ -590,22 +592,31 @@ fn program(instructions: Vec<u8>) {
         chip8.program_counter = chip8.program_counter.overflowing_add(2).0;
         chip8.stdout.flush().unwrap();
         let mut screen = String::new();
-        for line in chip8.screen {
-            let row = format!(
-                "{}\n\r",
-                line.iter()
-                    .map(|l| {
-                        if *l == 0 {
-                            ' '
-                        } else {
-                            '#'
-                        }
-                    })
-                    .collect::<String>()
-            );
-            screen = format!("{screen}{row}");
+        for (y, row) in chip8.screen.iter().enumerate() {
+            for (x, value) in row.iter().enumerate() {
+                if old_screen[y][x] == *value {
+                    continue;
+                }
+                let pixel = if *value == 0 { ' ' } else { '#' };
+                chip8.stdout.execute(cursor::MoveTo(x as u16, y as u16));
+                chip8.stdout.execute(Print(pixel));
+            }
+            // let row = format!(
+            //     "{}\n\r",
+            //     line.iter()
+            //         .map(|l| {
+            //             if *l == 0 {
+            //                 ' '
+            //             } else {
+            //                 '#'
+            //             }
+            //         })
+            //         .collect::<String>()
+            // );
+            // screen = format!("{screen}{row}");
         }
-        queue!(chip8.stdout, Clear(terminal::ClearType::All), Print(screen)).unwrap();
+        old_screen = chip8.screen.clone();
+        // queue!(chip8.stdout, Clear(terminal::ClearType::All), Print(screen)).unwrap();
         thread::sleep(Duration::from_millis(1));
     }
 }
